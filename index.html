@@ -1,0 +1,228 @@
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Super App-Panamericana - Teste de Rotas</title>
+
+<link rel="stylesheet"
+ href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 10px;
+  font-family: Arial, sans-serif;
+  background: #f5f5f0;
+}
+
+h3 {
+  margin: 4px 0 12px;
+  color: #344b36;
+  text-align: center;
+}
+
+input, button {
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 9px;
+  border-radius: 6px;
+  font-size: 15px;
+}
+
+input {
+  border: 1px solid #aaa;
+  background: white;
+}
+
+button {
+  border: 0;
+  background: #405f43;
+  color: white;
+  font-weight: bold;
+}
+
+button:disabled {
+  opacity: .6;
+}
+
+#status {
+  font-size: 13px;
+  margin: 5px 0 9px;
+  color: #444;
+  min-height: 18px;
+}
+
+#resultado {
+  font-size: 14px;
+  font-weight: bold;
+  margin-bottom: 9px;
+  color: #344b36;
+}
+
+#map {
+  width: 100%;
+  height: 350px;
+  border: 1px solid #aaa;
+  border-radius: 6px;
+}
+</style>
+</head>
+
+<body>
+
+<h3>Super App-Panamericana</h3>
+
+<input id="origem" type="text"
+ placeholder="Cidade de origem"/>
+
+<input id="destino" type="text"
+ placeholder="Cidade de destino"/>
+
+<button id="calcular" onclick="calcularRota()">
+Calcular Rota
+</button>
+
+<div id="status">Informe as duas cidades.</div>
+<div id="resultado"></div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+const map = L.map('map').setView([-15, -55], 4);
+
+L.tileLayer(
+ 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+ {
+   attribution: '&copy; OpenStreetMap contributors',
+   maxZoom: 19
+ }
+).addTo(map);
+
+let rotaAtual = null;
+let marcadores = [];
+
+const statusEl = document.getElementById('status');
+const resultadoEl = document.getElementById('resultado');
+const botao = document.getElementById('calcular');
+
+function esperar(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function localizarCidade(nome) {
+  const url = new URL(
+    'https://nominatim.openstreetmap.org/search'
+  );
+
+  url.search = new URLSearchParams({
+    q: nome,
+    format: 'jsonv2',
+    limit: '1',
+    addressdetails: '1'
+  });
+
+  const resposta = await fetch(url);
+  if (!resposta.ok) throw new Error('Falha na busca da cidade.');
+
+  const dados = await resposta.json();
+
+  if (!dados.length) {
+    throw new Error('Cidade não encontrada: ' + nome);
+  }
+
+  return {
+    lat: Number(dados[0].lat),
+    lon: Number(dados[0].lon),
+    nome: dados[0].display_name
+  };
+}
+
+async function calcularRota() {
+  const origem = document.getElementById('origem').value.trim();
+  const destino = document.getElementById('destino').value.trim();
+
+  if (!origem || !destino) {
+    statusEl.textContent = 'Informe origem e destino.';
+    return;
+  }
+
+  botao.disabled = true;
+  statusEl.textContent = 'Localizando as cidades...';
+  resultadoEl.textContent = '';
+
+  try {
+    const pontoA = await localizarCidade(origem);
+
+    // Respeita o intervalo de consulta do serviço público.
+    await esperar(1100);
+
+    const pontoB = await localizarCidade(destino);
+
+    statusEl.textContent = 'Calculando o percurso...';
+
+    const urlRota =
+      'https://router.project-osrm.org/route/v1/driving/' +
+      pontoA.lon + ',' + pontoA.lat + ';' +
+      pontoB.lon + ',' + pontoB.lat +
+      '?overview=full&geometries=geojson';
+
+    const resposta = await fetch(urlRota);
+
+    if (!resposta.ok) throw new Error('Falha ao calcular a rota.');
+
+    const dados = await resposta.json();
+
+    if (dados.code !== 'Ok' || !dados.routes.length) {
+      throw new Error('Não foi possível encontrar uma rota.');
+    }
+
+    const percurso = dados.routes[0];
+
+    if (rotaAtual) map.removeLayer(rotaAtual);
+    marcadores.forEach(m => map.removeLayer(m));
+    marcadores = [];
+
+    rotaAtual = L.geoJSON(percurso.geometry, {
+      style: {
+        color: '#2466d1',
+        weight: 5,
+        opacity: 0.85
+      }
+    }).addTo(map);
+
+    marcadores.push(
+      L.marker([pontoA.lat, pontoA.lon]).addTo(map)
+        .bindPopup('Origem: ' + origem),
+      L.marker([pontoB.lat, pontoB.lon]).addTo(map)
+        .bindPopup('Destino: ' + destino)
+    );
+
+    map.fitBounds(rotaAtual.getBounds(), {padding: [20, 20]});
+
+    const km = (percurso.distance / 1000).toFixed(1);
+    const horas = percurso.duration / 3600;
+    const h = Math.floor(horas);
+    const min = Math.round((horas - h) * 60);
+
+    resultadoEl.textContent =
+      'Distância: ' + km + ' km | Duração estimada: ' +
+      h + 'h ' + min + 'min';
+
+    statusEl.textContent = 'Rota calculada com sucesso!';
+
+  } catch (erro) {
+    statusEl.textContent = erro.message ||
+      'Erro ao consultar os serviços de mapa.';
+  } finally {
+    botao.disabled = false;
+  }
+}
+</script>
+
+</body>
+</html>
